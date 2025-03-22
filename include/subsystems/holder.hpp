@@ -7,7 +7,7 @@
 namespace HolderNamespace {
 enum class State { RELEASE, HOLD };
 
-class Holder : public subsystem<HolderNamespace::State> {
+class Holder : public subsystem<HolderNamespace::State, Holder> {
     public:
         Holder(std::shared_ptr<pros::adi::DigitalOut> clamp, std::shared_ptr<pros::Distance> distance)
             : clamp_(std::move(clamp)),
@@ -33,12 +33,9 @@ class Holder : public subsystem<HolderNamespace::State> {
             return distance_ != nullptr and distance_->get_distance() < 100 and
                    currState != HolderNamespace::State::HOLD;
         }
-    private:
-        std::shared_ptr<pros::adi::DigitalOut> clamp_;
-        std::shared_ptr<pros::Distance> distance_ = nullptr;
 
         // Run the task according to the current state
-        void runTask() override final {
+        void runTask() {
             if (detectedMogo() and timer.isDone()) {
                 currState = HolderNamespace::State::HOLD;
                 timer.set(AUTO_HOLD_TIMEOUT);
@@ -46,5 +43,10 @@ class Holder : public subsystem<HolderNamespace::State> {
 
             clamp_->set_value(currState == HolderNamespace::State::HOLD ? 100 : 0);
         }
+        
+    private:
+        std::shared_ptr<pros::adi::DigitalOut> clamp_;
+        std::shared_ptr<pros::Distance> distance_ = nullptr;
+
 };
 } // namespace HolderNamespace

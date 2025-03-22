@@ -4,7 +4,7 @@
 #include "lemlib/timer.hpp"
 #include "constants.hpp"
 
-template <typename StateType> class subsystem {
+template <typename StateType, typename Derived> class subsystem {
     public:
         subsystem() {
             task = std::make_unique<pros::Task>([this] { taskRunner(); });
@@ -15,24 +15,31 @@ template <typename StateType> class subsystem {
             if (task) { task->remove(); }
         }
 
-        void moveToState(StateType newState) { currState = newState; }
+        StateType getCurrentState() const { return currState; }
+
+        void moveToState(StateType newState) { 
+            prevState = currState;
+            currState = newState; 
+        }
 
         void moveToState(StateType newState, int time) {
             timer.set(time);
             moveToState(newState);
         }
+
     protected:
-        // Function that will be overridden by derived classes to provide custom task functionality
-        virtual void runTask() = 0;
-        StateType currState;
+        // CRTP
+        // virtual void runTask() = 0;
+        StateType prevState, currState;
+        
         lemlib::Timer timer {0};
-    private:
+    
         std::unique_ptr<pros::Task> task; // Use a unique_ptr to manage the task
 
         // Internal task function that runs in the base class
         void taskRunner() {
             while (true) {
-                runTask(); // Call the derived class's task logic
+                static_cast<Derived*>(this)->runTask(); // Call the derived class's task logic
                 pros::delay(10); // Adjust the delay as necessary
             }
         }

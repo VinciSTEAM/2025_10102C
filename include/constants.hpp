@@ -1,10 +1,12 @@
 #pragma once
 
 // Arm
-constexpr float MAX_DEGREES = 15000.0f; // 150 degrees
-constexpr float WAIT_DEGREES = 4200.0f; // 35 degrees
+constexpr float MAX_DEGREES = 30000.0f; 
+constexpr float WAIT_DEGREES = 3000.0f; // 30 degrees
 constexpr float DOWN_DEGREES = 1500.0f; // 15 degrees
-constexpr float DISCORE_DEGRESS = 15000; // 150 degrees
+constexpr float SCORE_DEGRESS = 17000.0f; 
+constexpr float DISCORE_DEGRESS = 13000.0f; 
+constexpr float ARM_PID_THRESHOLD = 10.0f;
 
 // Holder
 constexpr int AUTO_HOLD_TIMEOUT = 1000; // 1 sec

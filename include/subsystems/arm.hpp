@@ -1,14 +1,17 @@
 #pragma once
 
+#include "conveyor.hpp"
 #include "pros/motor_group.hpp"
 #include "lemlib/api.hpp"
+#include "pros/rtos.hpp"
 #include "subsystem.hpp"
+#include "spinner.hpp"
 
 namespace ArmNamespace {
 
-enum class State { DOWN, WAIT, UP, MANUAL_UP, IDLE };
+enum class State { DOWN, WAIT, UP, DISCORE_UP, SCORE_UP, IDLE };
 
-class Arm : public subsystem<State> {
+class Arm : public subsystem<State, Arm> {
     public:
         Arm(std::shared_ptr<pros::Motor> motor, std::shared_ptr<pros::Rotation> rotation,
             lemlib::ControllerSettings armAngularController)
@@ -18,43 +21,94 @@ class Arm : public subsystem<State> {
                             armAngularController.windupRange, true) {
             motor_->set_encoder_units(pros::E_MOTOR_ENCODER_DEGREES);
             motor_->tare_position();
-            motor_->set_brake_mode(pros::MotorBrake::hold);
+            motor_->set_brake_mode(pros::MotorBrake::coast);
             rotation_->set_position(0);
             rotation_->reset();
+            currState = State::DOWN;
+            prevState = State::DOWN;
         }
 
         ~Arm() override = default;
 
-        // Controls the arm based on button inputs
-        void control(bool button_1, bool button_2, bool button_3) {
-            if (button_1 or button_2) manual_ = false;
-            if (button_3) manual_ = true;
-
-            if (manual_) {
-                // Manual mode handling
-                if (button_3) {
-                    moveToState(State::MANUAL_UP);
-                } else {
-                    moveToState(State::IDLE);
-                }
-            } else {
-                // Auto mode handling
-                if (button_1) {
-                    moveToState(State::UP);
-                } else if (button_2) {
-                    // For button_2, check current state and decide:
-                    // If the current state is DOWN, go to WAIT; otherwise, go to DOWN.
-                    if (currState == State::DOWN) {
-                        moveToState(State::WAIT);
-                    } else {
-                        moveToState(State::DOWN);
-                    }
-                }
-                // Optionally, if no button is pressed and we're not in WAIT, ensure we go to DOWN.
-                else if (currState != State::WAIT) {
-                    moveToState(State::DOWN);
-                }
+        double arm_state_to_degree(ArmNamespace::State state) const{
+            switch (state) {
+                case State::DOWN: return DOWN_DEGREES;
+                case State::WAIT: return WAIT_DEGREES;
+                case State::UP: return MAX_DEGREES;
+                case State::SCORE_UP: return SCORE_DEGRESS;
+                case State::DISCORE_UP: return DISCORE_DEGRESS;
+                default: return 0;
             }
+        }
+        void move_arm_with_timeout(ArmNamespace::State state, int timeout_ms, int32_t velocity, bool async = false) {
+            if (async) {
+                pros::Task task([&]() {
+                    move_arm_with_timeout(state, timeout_ms, velocity, false);
+                });
+                pros::delay(10);  // delay to give the task time to start
+                return;            
+            }        
+            
+            timer.set(timeout_ms);  // Set the timer
+            float angularError = (arm_state_to_degree(state) - rotation_->get_position()) / 100.0;
+            // Polling loop to check if the movement is complete or if timeout occurs
+            if (fabs(angularError) > ARM_PID_THRESHOLD  && !timer.isDone()) {
+                motor_->move(velocity * 1.27); 
+            } else {
+                motor_->move(0);  // Stop the motor
+            }
+        }
+
+        void move_arm_with_pid_with_timeout(ArmNamespace::State state, int timeout_ms, int32_t velocity, bool async = false) {
+            if (async) {
+                pros::Task task([&]() {
+                    move_arm_with_pid_with_timeout(state, timeout_ms, velocity, false);
+                });
+                pros::delay(10);  // delay to give the task time to start
+                return;            
+            }  
+            if (timer.isDone()) {
+                timer.set(timeout_ms);  // Set the timer
+            }              
+            float angularError = (arm_state_to_degree(state) - rotation_->get_position()) / 100.0;
+            int sign = angularError > 0 ? 1 : -1;
+            // Polling loop to check if the movement is complete or if timeout occurs
+            if (fabs(angularError) > ARM_PID_THRESHOLD && !timer.isDone()) {
+                // motor_->move(sign *velocity * 1.27);
+                motor_->move(armAngularPID.update(angularError));
+            } else {
+                motor_->move(0);  // Stop the motor
+            }
+        }
+
+        // Contrpositionols the arm based on button inputs
+        void control(bool button_1, bool button_2, bool button_3) { // 2 Y right
+
+            if (button_1) {
+                motor_->set_brake_mode(pros::MotorBrake::hold);
+                moveToState(State::UP);
+            } else if (currState == State::UP) {
+                motor_->set_brake_mode(pros::MotorBrake::coast);
+                moveToState(State::DOWN);
+            }
+
+            if (button_2 && currState == State::DOWN) {
+                motor_->set_brake_mode(pros::MotorBrake::hold);
+                moveToState(State::WAIT);
+                pros::delay(200);  
+            } else if (button_2 && currState == State::WAIT) {
+                motor_->set_brake_mode(pros::MotorBrake::hold);
+                moveToState(State::SCORE_UP);
+            } else if (button_2 && currState == State::SCORE_UP) {
+                motor_->set_brake_mode(pros::MotorBrake::hold);
+                moveToState(State::DOWN);
+            }
+
+            if (button_3) {
+                motor_->set_brake_mode(pros::MotorBrake::hold);
+                moveToState(State::DISCORE_UP);
+            }
+ 
         }
 
         void changeVelocity(float ratio) { ratio_ = ratio; }
@@ -70,33 +124,18 @@ class Arm : public subsystem<State> {
                 case State::UP: return "UP";
                 case State::WAIT: return "WAIT";
                 case State::DOWN: return "DOWN";
-                case State::MANUAL_UP: return "MANUAL_UP";
+                case State::SCORE_UP: return "SCORE_UP";
+                case State::DISCORE_UP: return "DISCORE_UP";
                 default: return "UNKNOWN";
             }
         }
-
-        void moveToState(State newState) {
-            armAngularPID.reset();
-            currState = newState;
-        }
-
-        void moveToState(State newState, int time) {
-            timer.set(time);
-            moveToState(newState);
-        }
-
+      
         void resetRotation(float rotation) { rotation_->set_position(rotation); }
-    private:
-        std::shared_ptr<pros::Motor> motor_;
-        std::shared_ptr<pros::Rotation> rotation_;
-        float ratio_ = 1;
-        bool manual_;
-
-        // angular motion controller
-        lemlib::PID armAngularPID;
-
-        // Task to control the arm's movement
-        void runTask() override final {
+        bool isTaskDone(double threshold) {
+            return fabs(arm_state_to_degree(currState) - rotation_->get_position()) < threshold;
+         }
+        
+        void runTask() {
             if (currState == State::DOWN) motor_->set_brake_mode(pros::MotorBrake::coast);
             else motor_->set_brake_mode(pros::MotorBrake::hold);
 
@@ -110,7 +149,7 @@ class Arm : public subsystem<State> {
                     break;
                 case State::WAIT:
                     if (float angularError = (WAIT_DEGREES - rotation_->get_position()) / 100.0;
-                        abs(angularError) > 2) {
+                        fabs(angularError) > 2) {
                         motor_->move(armAngularPID.update(angularError));
                     } else {
                         motor_->move(0);
@@ -123,16 +162,34 @@ class Arm : public subsystem<State> {
                         motor_->move(0);
                     }
                     break;
-                case State::MANUAL_UP:
+
+                case State::DISCORE_UP:
                     if (float angularError = (DISCORE_DEGRESS - rotation_->get_position()) / 100.0;
-                        abs(angularError) > 2) {
+                        fabs(angularError) > 2) {
                         motor_->move(armAngularPID.update(angularError));
                     } else {
                         motor_->move(0);
                     }
                     break;
+                case State::SCORE_UP:
+                    move_arm_with_pid_with_timeout(State::SCORE_UP, 500, 100, false);
+                    // if (float angularError = (SCORE_DEGRESS - rotation_->get_position()) / 100.0;
+                    //     fabs(angularError) > 2) {
+                    //     motor_->move(armAngularPID.update(angularError));
+                    // } else {
+                    //     motor_->move(0);
+                    // }
+                    break;
                 case State::IDLE: motor_->move(0); break;
             }
         }
+    private:
+        std::shared_ptr<pros::Motor> motor_;
+        std::shared_ptr<pros::Rotation> rotation_;
+        float ratio_ = 1;
+        bool manual_;
+        // angular motion controller
+        lemlib::PID armAngularPID;
+
 };
 } // namespace ArmNamespace
